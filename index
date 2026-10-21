@@ -1,0 +1,104 @@
+import cv2
+import math
+
+# OpenCV 기본 얼굴 검출기 불러오기
+face_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+face_detector = cv2.CascadeClassifier(face_path)
+
+if face_detector.empty():
+    print("오류: OpenCV 얼굴 인식 모델을 불러오지 못했습니다.")
+    print("터미널에서 다음 명령어를 실행하세요: py -m pip install --upgrade opencv-python")
+    raise SystemExit(1)
+
+# 눈 검출기는 Roll을 대략 추정하는 데 사용합니다.
+eye_path = cv2.data.haarcascades + "haarcascade_eye_tree_eyeglasses.xml"
+eye_detector = cv2.CascadeClassifier(eye_path)
+
+camera = cv2.VideoCapture(0)
+if not camera.isOpened():
+    print("오류: 웹캠을 열 수 없습니다. 다른 앱이 카메라를 사용 중인지 확인하세요.")
+    raise SystemExit(1)
+
+WINDOW_NAME = "Face Coordinates - Press Q to quit"
+TOO_CLOSE_RATIO = 0.55  # 얼굴 너비가 화면 너비의 55% 이상이면 가까움 경고
+
+try:
+    while True:
+        ok, frame = camera.read()
+        if not ok:
+            print("오류: 웹캠 영상을 읽을 수 없습니다.")
+            break
+
+        # 거울처럼 보이도록 좌우 반전
+        frame = cv2.flip(frame, 1)
+        height, width = frame.shape[:2]
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = cv2.equalizeHist(gray)
+
+        faces = face_detector.detectMultiScale(
+            gray,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(60, 60)
+        )
+
+        # 얼굴이 여러 개면 화면에서 가장 큰 얼굴 하나만 선택
+        if len(faces) > 0:
+            x, y, w, h = max(faces, key=lambda r: r[2] * r[3])
+            center_x = x + w // 2
+            center_y = y + h // 2
+            close = (w / width) >= TOO_CLOSE_RATIO
+
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 220, 0), 2)
+            cv2.circle(frame, (center_x, center_y), 5, (0, 0, 255), -1)
+            cv2.line(frame, (center_x, 0), (center_x, height), (255, 180, 0), 1)
+            cv2.line(frame, (0, center_y), (width, center_y), (255, 180, 0), 1)
+
+            # 좌표는 화면 왼쪽 위를 (0, 0)으로 한 픽셀 좌표입니다.
+            cv2.putText(frame, f"X: {center_x} px  Y: {center_y} px",
+                        (20, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 255), 2)
+            cv2.putText(frame, f"Face width: {w}px ({w / width:.0%} of screen)",
+                        (20, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
+
+            if close:
+                cv2.putText(frame, "WARNING: MOVE FARTHER AWAY",
+                            (20, 105), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 3)
+
+            # 눈 검출이 성공하면 눈 두 개의 기울기로 Roll을 대략 계산합니다.
+            face_gray = gray[y:y + h, x:x + w]
+            eyes = eye_detector.detectMultiScale(
+                face_gray,
+                scaleFactor=1.1,
+                minNeighbors=6,
+                minSize=(15, 15)
+            ) if not eye_detector.empty() else []
+
+            # 눈 후보를 얼굴 윗부분에 있는 것으로 제한하고 가장 큰 두 후보를 사용
+            eye_candidates = [e for e in eyes if e[1] < h * 0.65]
+            if len(eye_candidates) >= 2:
+                eye_candidates = sorted(eye_candidates, key=lambda e: e[2] * e[3], reverse=True)[:2]
+                eye_centers = sorted([(ex + ew / 2, ey + eh / 2) for ex, ey, ew, eh in eye_candidates], key=lambda p: p[0])
+                (lx, ly), (rx, ry) = eye_centers
+                roll = math.degrees(math.atan2(ry - ly, rx - lx))
+                cv2.putText(frame, f"Roll (approx): {roll:.1f} deg",
+                            (20, 135 if close else 105), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 0), 2)
+            else:
+                cv2.putText(frame, "Roll: eyes not detected",
+                            (20, 135 if close else 105), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+
+            # Haar 얼굴 사각형만으로 Pitch를 정확하게 계산할 수 없으므로 임의의 값을 표시하지 않습니다.
+            cv2.putText(frame, "Pitch: unavailable with this detector",
+                        (20, height - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+        else:
+            cv2.putText(frame, "No face detected", (20, 35),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+
+        cv2.putText(frame, "Press Q to quit", (width - 190, height - 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+        cv2.imshow(WINDOW_NAME, frame)
+
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+finally:
+    camera.release()
+    cv2.destroyAllWindows()
